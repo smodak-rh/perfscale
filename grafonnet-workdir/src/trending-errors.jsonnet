@@ -29,6 +29,13 @@ local query(sql, format='time_series') = {
   },
 };
 
+local passFailOverrides = [
+  timeSeries.standardOptions.override.byName.new('passes')
+  + timeSeries.standardOptions.override.byName.withProperty('color', { mode: 'fixed', fixedColor: 'green' }),
+  timeSeries.standardOptions.override.byName.new('failures')
+  + timeSeries.standardOptions.override.byName.withProperty('color', { mode: 'fixed', fixedColor: 'red' }),
+];
+
 local grandTotalRunsQuery(testId) = [
   query(|||
     SELECT
@@ -190,7 +197,8 @@ dashboard.new('Trending errors')
   + timeSeries.fieldConfig.defaults.custom.stacking.withMode('normal')
   + timeSeries.standardOptions.withUnit('none')
   + timeSeries.standardOptions.withMin(0)
-  + timeSeries.standardOptions.withDecimals(0),
+  + timeSeries.standardOptions.withDecimals(0)
+  + timeSeries.standardOptions.withOverrides(passFailOverrides),
 
   timeSeries.new('Errors by reason grand total')
   + timeSeries.queryOptions.withDatasource(type='postgres', uid='${datasource}')
@@ -236,7 +244,8 @@ dashboard.new('Trending errors')
     + timeSeries.fieldConfig.defaults.custom.stacking.withMode('normal')
     + timeSeries.standardOptions.withUnit('none')
     + timeSeries.standardOptions.withMin(0)
-    + timeSeries.standardOptions.withDecimals(0),
+    + timeSeries.standardOptions.withDecimals(0)
+    + timeSeries.standardOptions.withOverrides(passFailOverrides),
   ])
   + row.gridPos.withY(39),
 
