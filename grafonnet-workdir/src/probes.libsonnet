@@ -32,7 +32,7 @@ local pieChart = grafonnet.panel.pieChart;
   memberClusterVar(values)::
     grafonnet.dashboard.variable.custom.new(
       'member_cluster',
-      values=values,
+      values=[if std.endsWith(v, '/') then std.slice(v, 0, std.length(v) - 1, 1) else v for v in values],
     )
     + grafonnet.dashboard.variable.custom.generalOptions.withLabel('Member cluster')
     + grafonnet.dashboard.variable.custom.generalOptions.withDescription(
@@ -86,7 +86,7 @@ local pieChart = grafonnet.panel.pieChart;
           data
       WHERE
           horreum_testid = %g
-          AND label_values->>'.metadata.env.MEMBER_CLUSTER' = ${member_cluster}
+          AND rtrim(label_values->>'.metadata.env.MEMBER_CLUSTER', '/') = rtrim(${member_cluster}, '/')
           AND $__timeFilter(start)
           %s
       ORDER BY
@@ -111,7 +111,7 @@ local pieChart = grafonnet.panel.pieChart;
           data
       WHERE
           horreum_testid = %g
-          AND label_values->>'.metadata.env.MEMBER_CLUSTER' = ${member_cluster}
+          AND rtrim(label_values->>'.metadata.env.MEMBER_CLUSTER', '/') = rtrim(${member_cluster}, '/')
           AND $__timeFilter(start)
           %s
       ORDER BY
@@ -137,7 +137,7 @@ local pieChart = grafonnet.panel.pieChart;
           data
       WHERE
           horreum_testid = %g
-          AND label_values->>'.metadata.env.MEMBER_CLUSTER' = ${member_cluster}
+          AND rtrim(label_values->>'.metadata.env.MEMBER_CLUSTER', '/') = rtrim(${member_cluster}, '/')
           AND $__timeFilter(start)
           %s
       GROUP BY
