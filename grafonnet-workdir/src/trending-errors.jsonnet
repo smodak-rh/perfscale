@@ -67,7 +67,7 @@ local grandTotalErrorsByReasonQuery(testId) = [
                 WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN
                     'no error detected'
                 WHEN label_values ? '__results_errors_error_reasons_simple' THEN
-                    regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\s?x ', '', 'g')
+                    regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\s?x ', '', 'g')
                 ELSE
                     NULL
             END,
@@ -152,7 +152,7 @@ local perClusterErrorsByReasonQuery(testId) = [
                 WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN
                     'no error detected'
                 WHEN label_values ? '__results_errors_error_reasons_simple' THEN
-                    regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\s?x ', '', 'g')
+                    regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\s?x ', '', 'g')
                 ELSE
                     NULL
             END,
@@ -185,7 +185,11 @@ dashboard.new('Trending errors')
   + timeSeries.gridPos.withH(13)
   + timeSeries.gridPos.withW(24)
   + timeSeries.fieldConfig.defaults.custom.withLineInterpolation('smooth')
-  + timeSeries.standardOptions.withUnit('none'),
+  + timeSeries.fieldConfig.defaults.custom.withFillOpacity(20)
+  + timeSeries.fieldConfig.defaults.custom.stacking.withMode('normal')
+  + timeSeries.standardOptions.withUnit('none')
+  + timeSeries.standardOptions.withMin(0)
+  + timeSeries.standardOptions.withDecimals(0),
 
   timeSeries.new('Errors by reason grand total')
   + timeSeries.queryOptions.withTargets(grandTotalErrorsByReasonQuery(testId))
@@ -195,7 +199,10 @@ dashboard.new('Trending errors')
   + timeSeries.fieldConfig.defaults.custom.withDrawStyle('bars')
   + timeSeries.fieldConfig.defaults.custom.withLineInterpolation('stepBefore')
   + timeSeries.fieldConfig.defaults.custom.withFillOpacity(20)
-  + timeSeries.standardOptions.withUnit('none'),
+  + timeSeries.fieldConfig.defaults.custom.stacking.withMode('normal')
+  + timeSeries.standardOptions.withUnit('none')
+  + timeSeries.standardOptions.withMin(0)
+  + timeSeries.standardOptions.withDecimals(0),
 
   timeSeries.new('Errors by cause grand total')
   + timeSeries.queryOptions.withTargets(grandTotalErrorsByCauseQuery(testId))
@@ -205,7 +212,10 @@ dashboard.new('Trending errors')
   + timeSeries.fieldConfig.defaults.custom.withDrawStyle('bars')
   + timeSeries.fieldConfig.defaults.custom.withLineInterpolation('stepBefore')
   + timeSeries.fieldConfig.defaults.custom.withFillOpacity(20)
-  + timeSeries.standardOptions.withUnit('none'),
+  + timeSeries.fieldConfig.defaults.custom.stacking.withMode('normal')
+  + timeSeries.standardOptions.withUnit('none')
+  + timeSeries.standardOptions.withMin(0)
+  + timeSeries.standardOptions.withDecimals(0),
 
   row.new('Runs count per cluster')
   + row.withPanels([

@@ -9,8 +9,14 @@
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "lineInterpolation": "smooth"
+            "fillOpacity": 20,
+            "lineInterpolation": "smooth",
+            "stacking": {
+              "mode": "normal"
+            }
           },
+          "decimals": 0,
+          "min": 0,
           "unit": "none"
         }
       },
@@ -51,8 +57,13 @@
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 20,
-            "lineInterpolation": "stepBefore"
+            "lineInterpolation": "stepBefore",
+            "stacking": {
+              "mode": "normal"
+            }
           },
+          "decimals": 0,
+          "min": 0,
           "unit": "none"
         }
       },
@@ -70,7 +81,7 @@
             "uid": "${datasource}"
           },
           "format": "time_series",
-          "rawSql": "SELECT\n    $__timeGroupAlias(start, '1h'),\n    COALESCE(\n        CASE\n            WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN\n                'no error detected'\n            WHEN label_values ? '__results_errors_error_reasons_simple' THEN\n                regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\\\s?x ', '', 'g')\n            ELSE\n                NULL\n        END,\n        NULL) AS \"metric\",\n    COUNT(*) AS \"count\"\nFROM\n    data\nWHERE\n    horreum_testid = 372\n    AND label_values ? '__results_errors_error_reasons_simple'\n    AND label_values->>'__results_errors_error_reasons_simple' != ''\n    AND $__timeFilter(start)\nGROUP BY 1,2\nORDER BY 1;\n"
+          "rawSql": "SELECT\n    $__timeGroupAlias(start, '1h'),\n    COALESCE(\n        CASE\n            WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN\n                'no error detected'\n            WHEN label_values ? '__results_errors_error_reasons_simple' THEN\n                regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\s?x ', '', 'g')\n            ELSE\n                NULL\n        END,\n        NULL) AS \"metric\",\n    COUNT(*) AS \"count\"\nFROM\n    data\nWHERE\n    horreum_testid = 372\n    AND label_values ? '__results_errors_error_reasons_simple'\n    AND label_values->>'__results_errors_error_reasons_simple' != ''\n    AND $__timeFilter(start)\nGROUP BY 1,2\nORDER BY 1;\n"
         }
       ],
       "title": "Errors by reason grand total",
@@ -86,8 +97,13 @@
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 20,
-            "lineInterpolation": "stepBefore"
+            "lineInterpolation": "stepBefore",
+            "stacking": {
+              "mode": "normal"
+            }
           },
+          "decimals": 0,
+          "min": 0,
           "unit": "none"
         }
       },
@@ -207,7 +223,7 @@
                 "uid": "${datasource}"
               },
               "format": "time_series",
-              "rawSql": "SELECT\n    $__timeGroupAlias(start, '1h'),\n    COALESCE(\n        CASE\n            WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN\n                'no error detected'\n            WHEN label_values ? '__results_errors_error_reasons_simple' THEN\n                regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\\\s?x ', '', 'g')\n            ELSE\n                NULL\n        END,\n        NULL) AS \"metric\",\n    COUNT(*) AS \"count\"\nFROM\n    data\nWHERE\n    horreum_testid = 372\n    AND rtrim(label_values->>'.metadata.env.MEMBER_CLUSTER', '/') = rtrim(${member_cluster}, '/')\n    AND label_values ? '__results_errors_error_reasons_simple'\n    AND label_values->>'__results_errors_error_reasons_simple' != ''\n    AND $__timeFilter(start)\nGROUP BY 1,2\nORDER BY 1;\n"
+              "rawSql": "SELECT\n    $__timeGroupAlias(start, '1h'),\n    COALESCE(\n        CASE\n            WHEN label_values ? '__results_errors_error_reasons_simple' AND label_values->>'__results_errors_error_reasons_simple' = '' THEN\n                'no error detected'\n            WHEN label_values ? '__results_errors_error_reasons_simple' THEN\n                regexp_replace(label_values->>'__results_errors_error_reasons_simple', '[0-9]+\\s?x ', '', 'g')\n            ELSE\n                NULL\n        END,\n        NULL) AS \"metric\",\n    COUNT(*) AS \"count\"\nFROM\n    data\nWHERE\n    horreum_testid = 372\n    AND rtrim(label_values->>'.metadata.env.MEMBER_CLUSTER', '/') = rtrim(${member_cluster}, '/')\n    AND label_values ? '__results_errors_error_reasons_simple'\n    AND label_values->>'__results_errors_error_reasons_simple' != ''\n    AND $__timeFilter(start)\nGROUP BY 1,2\nORDER BY 1;\n"
             }
           ],
           "title": "Errors by reason for ${member_cluster}",
