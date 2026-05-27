@@ -39,3 +39,23 @@ Access to our Grafana organization is guarded by these LDAP groups (ask owners o
 
  * For admin access: <https://rover.redhat.com/groups/group/konflux-perfscale-grafanacorp-admins>
  * For user, read-only access: <https://rover.redhat.com/groups/group/konflux-perfscale-grafanacorp-users>
+
+AI agent skills
+---------------
+
+This repo uses the [`skills` CLI](https://github.com/mattpocock/skills) to manage reusable AI agent skills. Installed skills live in `.agents/skills/` with symlinks in `.claude/skills/`, and versions are tracked in `skills-lock.json`.
+
+After cloning, restore installed skills from the lock file:
+
+```bash
+npx skills@latest experimental_install
+```
+
+Other useful commands:
+
+```bash
+npx skills@latest list                      # List installed skills
+npx skills@latest add mattpocock/skills     # Add skills from a package
+npx skills@latest update                    # Update to latest versions
+npx skills@latest remove                    # Remove a skill
+```

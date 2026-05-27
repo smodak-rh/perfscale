@@ -33,3 +33,17 @@ Grafana dashboards and operational tools for the Konflux Performance & Scale tea
 - Grafonnet dashboards: verify they build with `grafonnet-workdir/build.sh`.
 - Python code: must pass `black` and `flake8`.
 - Shell scripts: must pass `shellcheck`.
+
+## Agent skills
+
+### Issue tracker
+
+Jira — project KONFLUX, component Performance, on redhat.atlassian.net. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Not used. This repo does not follow a triage workflow.
+
+### Domain docs
+
+Single-context layout. See `docs/agents/domain.md`.
