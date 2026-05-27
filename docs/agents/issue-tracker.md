@@ -1,16 +1,20 @@
 # Issue tracker: Jira
 
-Issues for this repo live in Jira on **redhat.atlassian.net**, project **KONFLUX**, component **Performance**.
+Issues for this repo are tracked in Jira.
+
+- **Instance:** redhat.atlassian.net
+- **Project:** KONFLUX
+- **Component:** Performance
 
 ## Conventions
 
-- **Browse issues**: <https://redhat.atlassian.net/issues/?jql=project%20%3D%20KONFLUX%20AND%20component%20%3D%20Performance>
-- **View an issue**: `https://redhat.atlassian.net/browse/KONFLUX-<number>`
-- Agents do not have direct Jira API access. When a skill says "publish to the issue tracker" or "create an issue", draft the issue content (title, description, labels) and present it to the user for manual creation in Jira.
-- When a skill says "fetch the relevant ticket", ask the user to paste the Jira issue content or provide the issue key so it can be looked up.
+- Issues are managed via the Jira web UI or API or `acli` CLI tool.
+- New issues should have the component set to "Performance".
 
-## Labels and fields
+## When a skill says "publish to the issue tracker"
 
-- **Project**: KONFLUX
-- **Component**: Performance
-- Apply any additional labels as Jira labels on the issue.
+Create a Jira issue in the KONFLUX project with component "Performance". If CLI access is unavailable, present the issue title, description, and labels for the user to create manually.
+
+## When a skill says "fetch the relevant ticket"
+
+Ask the user for the Jira issue key, or infer it from branch names / commit messages (e.g. `KONFLUX-1234`).
