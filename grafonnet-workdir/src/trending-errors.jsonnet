@@ -1,5 +1,5 @@
-local probes = import 'probes.libsonnet';
 local grafonnet = import 'github.com/grafana/grafonnet/gen/grafonnet-latest/main.libsonnet';
+local probes = import 'probes.libsonnet';
 
 local dashboard = grafonnet.dashboard;
 local timeSeries = grafonnet.panel.timeSeries;
@@ -8,7 +8,7 @@ local row = grafonnet.panel.row;
 local testId = 372;
 
 local memberClusters = [
-  'https://api.kfluxfedorap01.toli.p1.openshiftapps.com:6443/',
+  'https://api.kflux-fedora-01.84db.p1.openshiftapps.com:6443/',
   'https://api.kflux-ocp-p01.7ayg.p1.openshiftapps.com:6443/',
   'https://api.kflux-prd-rh02.0fk9.p1.openshiftapps.com:6443/',
   'https://api.kflux-prd-rh03.nnv1.p1.openshiftapps.com:6443/',
