@@ -32,7 +32,7 @@ params = {
     "end": end_time_in_secs,
 }
 
-response = requests.get(url, headers=headers, params=params, verify=False, timeout=60)
+response = requests.get(url, headers=headers, params=params, verify=False, timeout=60)  # nosec B501
 
 if response.status_code == 200:
     print(json.dumps(response.json(), indent=4))

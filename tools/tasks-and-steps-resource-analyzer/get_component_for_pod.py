@@ -64,7 +64,7 @@ else:
     params = {"query": query}
 
 try:
-    response = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
+    response = requests.get(url, headers=headers, params=params, verify=False, timeout=30)  # nosec B501
 except Exception as exc:
     print(json.dumps({"error": f"request failed: {exc}"}))
     sys.exit(0)
@@ -118,7 +118,11 @@ if not data:
 
         try:
             retry_response = requests.get(
-                url, headers=headers, params=params_no_ns, verify=False, timeout=30
+                url,
+                headers=headers,
+                params=params_no_ns,
+                verify=False,
+                timeout=30,  # nosec B501
             )
             if retry_response.status_code == 200:
                 retry_data = retry_response.json().get("data", {}).get("result", [])

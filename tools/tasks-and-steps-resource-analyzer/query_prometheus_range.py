@@ -41,7 +41,11 @@ params = {
 
 t0 = time.time()
 resp = requests.get(
-    url, headers=headers, params=params, verify=False, timeout=900
+    url,
+    headers=headers,
+    params=params,
+    verify=False,
+    timeout=900,  # nosec B501
 )  # 15 minutes timeout
 resp.raise_for_status()
 print(resp.text)

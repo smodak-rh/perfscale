@@ -23,7 +23,7 @@ resp = requests.get(
     f"https://{host}/api/v1/query",
     headers={"Authorization": f"Bearer {token}"},
     params={"query": query},
-    verify=False,
+    verify=False,  # nosec B501
     timeout=180,
 )
 resp.raise_for_status()

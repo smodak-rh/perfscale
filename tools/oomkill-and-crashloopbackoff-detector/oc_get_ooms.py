@@ -1437,7 +1437,7 @@ def query_context(
             cluster_dir.mkdir(parents=True, exist_ok=True)
             outfile = cluster_dir / f"{cluster}.log"
             outfile.write_text(json.dumps(cluster_result, indent=2))
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
     return cluster, cluster_result, None
