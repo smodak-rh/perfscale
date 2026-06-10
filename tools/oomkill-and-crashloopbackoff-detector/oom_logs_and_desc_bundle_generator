@@ -141,7 +141,7 @@ list_remote_files() {
         norm="$href"
         if [[ -n "$base_path_opt" ]]; then
             if [[ "$href" == "$base_path_opt"/* ]]; then
-                norm="${href#$base_path_opt/}"
+                norm="${href#"$base_path_opt"/}"
             elif [[ "$href" == "$base_path_opt" ]]; then
                 continue
             fi

@@ -45,7 +45,7 @@ CONTEXTS="$(kubectl config get-contexts -o name 2>/dev/null | xargs || echo 'def
 
 # Create temporary file for CSV output
 TMP_CSV=$(mktemp)
-trap "rm -f '$TMP_CSV'" EXIT
+trap 'rm -f "$TMP_CSV"' EXIT
 
 # CSV header matching the output format: cluster, task, step, pod_max_mem, namespace_max_mem, component_max_mem, application_max_mem, mem_max_mb, mem_p95_mb, mem_p90_mb, mem_median_mb, pod_max_cpu, namespace_max_cpu, component_max_cpu, application_max_cpu, cpu_max, cpu_p95, cpu_p90, cpu_median
 echo '"cluster", "task", "step", "pod_max_mem", "namespace_max_mem", "component_max_mem", "application_max_mem", "mem_max_mb", "mem_p95_mb", "mem_p90_mb", "mem_median_mb", "pod_max_cpu", "namespace_max_cpu", "component_max_cpu", "application_max_cpu", "cpu_max", "cpu_p95", "cpu_p90", "cpu_median"' >> "$TMP_CSV"
