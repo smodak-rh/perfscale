@@ -4,7 +4,21 @@ set -eu -o pipefail
 #set -x
 
 function log() {
-    echo "$( date -u ) INFO ${*}"
+    echo "$( date -u ) INFO ${@}"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: oclogin [list|<cluster>|urls <cluster>]
+
+Commands:
+  list              List known Konflux clusters and console URLs
+  urls <cluster>    Print API server URL for a cluster
+  <cluster>         Open web login flow for a cluster
+
+Options:
+  -h, --help        Show this help
+EOF
 }
 
 function cluster_urls() {
@@ -15,12 +29,12 @@ function cluster_urls() {
     fi
 
     row="$( echo "${CLUSTERS}" | grep "^${cluster} " | tail -n 1 )"
-    if [[ -z "${cluster}" ]]; then
+    if [[ -z "${row}" ]]; then
         log "Cluster not found in my list, I do not know what to do"
         exit 1
     fi
 
-    read -r -a row_array <<< "$row"
+    row_array=($row)
     console_url="${row_array[1]}"
     if [[ "${#row_array[@]}" -eq 2 ]]; then
         api_url="$( echo "${console_url}" | sed -e "s|://console-openshift-console\.apps|://api|" -e "s|/$|:6443/|" )"
@@ -31,12 +45,33 @@ function cluster_urls() {
     echo "${console_url} ${api_url}"
 }
 
+mode=""
 if [[ ${#} -eq 0 ]]; then
     cluster="list"
 elif [[ ${#} -eq 1 ]]; then
-    cluster="${1}"
+    case "${1}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            cluster="${1}"
+            ;;
+    esac
+elif [[ ${#} -eq 2 && "${1}" == "urls" ]]; then
+    case "${2}" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            cluster="${2}"
+            mode="urls"
+            ;;
+    esac
 elif [[ ${#} -gt 1 ]]; then
-    log "Exactly one parameter needed, try 'list'"
+    log "Usage: oclogin [list|<cluster>|urls <cluster>]"
+    usage >&2
     exit 1
 fi
 
@@ -86,11 +121,20 @@ case $cluster in
         echo "$CLUSTERS"
     ;;
     *)
+        if [[ "${mode:-}" == "urls" ]]; then
+            if ! echo "${CLUSTERS}" | grep --quiet "^${cluster} "; then
+                log "Cluster '${cluster}' unknown. Try 'list'."
+                exit 1
+            fi
+            cluster_info=($( cluster_urls "$cluster" ))
+            echo "${cluster_info[1]}"
+            exit 0
+        fi
         if ! echo "${CLUSTERS}" | grep --quiet "^${cluster} "; then
             log "Cluster '${cluster}' unknown. Try 'list'."
             exit 1
         fi
-        read -r -a cluster_info <<< "$( cluster_urls "$cluster" )"
+        cluster_info=($( cluster_urls "$cluster" ))
         cluster_console="${cluster_info[0]}"
         cluster_api="${cluster_info[1]}"
         log "Logging to '$cluster' console '$cluster_console' api '$cluster_api'"

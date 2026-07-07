@@ -1,43 +1,435 @@
-#/bin/bash
+#!/bin/bash
 
-# Lets delete all the contexts first
-#echo "--------- Deleting all Existing Contexts first ---------"
-#for KContext in `oc config get-contexts | tail -n+2 | tr -d '*' | awk '{print $1}' | xargs`
-#do
-#	echo "Deleting \"${KContext}\""
-#	oc config delete-context ${KContext}
-#	oc config delete-cluster ${KContext}
-#done
-#echo "--------- Deleted all Existing Contexts ---------"
-#echo "--------- Listing all Existing Contexts if they still exist ---------"
-#oc config get-contexts
-#echo "---------------------------------------------------------------------"
+case "${1:-}" in
+    -h|--help)
+        cat <<'EOF'
+Usage: oclogin-all [options]
 
+Ensure all Konflux cluster contexts exist and are authenticated.
 
-# Original Clusters by Jan Huter
-#CLUSTERS="consoledot-perf jenkins-agents-dno-psi jenkins-dno-psi kfluxfedorap01 kflux-ocp-p01 kflux-osp-p01 kflux-prd-rh03 kflux-rhel-p01 logan-gpc-psi stone-prd-rh01 stone-prd-rh02 stone-prod-p01 stone-prod-p02 stone-stage-p01 stone-stg-rh01"
+Options:
+  --force           Delete Konflux cluster contexts, then re-login to all
+  --cluster NAME    Process a single cluster only
+  --dry-run         Show planned actions without logging in
+  -h, --help        Show this help
 
-# New list picked up directly from https://eisraeli.pages.redhat.com/rhtap-link/#konflux-clusters
-# NOT Working
-#CLUSTERS="kflux-c-prd-e01 kflux-c-prd-i01 kflux-c-stg-e01 kflux-c-stg-i01 kflux-ocp-p01 kflux-osp-p01 kflux-prd-es01 kflux-prd-rh03 kflux-rhel-p01 kflux-stg-es01 kfluxfedorap01 stone-prd-host1 stone-prd-rh01 stone-prd-rh02 stone-prod-p01 stone-prod-p02 stone-stage-p01 stone-stg-host stone-stg-rh01"
+Environment:
+  OCLOGIN               Path to oclogin helper (default: alongside this script)
+  REQUEST_TIMEOUT       Timeout for oc get ns checks (default: 15s)
+  LOGIN_WAIT_SECONDS    Max wait after web login (default: 120)
+EOF
+        exit 0
+        ;;
+esac
 
-# New list picked up directly from https://eisraeli.pages.redhat.com/rhtap-link/#konflux-clusters
-# Working
-CLUSTERS="stone-prd-rh02 kflux-ocp-p01 kflux-osp-p01 kflux-prd-es01 kflux-prd-rh02 kflux-prd-rh03 kflux-rhel-p01 kflux-stg-es01 stone-prd-rh01 stone-prod-p01 stone-prod-p02 stone-stage-p01 stone-stg-rh01"
+set -euo pipefail
 
-first_cluster=1
-for KONFLUX_CLUSTER in ${CLUSTERS}
-do
-echo "--------- Logging to Konflux Cluster ${KONFLUX_CLUSTER} ---------"
-oclogin ${KONFLUX_CLUSTER}
-sleep 5
-if [ ${first_cluster} -eq 1 ]; then
-	read -s -p "Enter any Key to proceed..."
-	first_cluster=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "${SCRIPT_DIR}/oclogin" ]]; then
+    OCLOGIN="${OCLOGIN:-${SCRIPT_DIR}/oclogin}"
+else
+    OCLOGIN="${OCLOGIN:-/usr/local/bin/oclogin}"
 fi
-echo " "
+REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-15s}"
+LOGIN_WAIT_SECONDS="${LOGIN_WAIT_SECONDS:-120}"
+
+# New list picked up directly from https://eisraeli.pages.redhat.com/rhtap-link/#konflux-clusters
+# Working (kflux-prd-rh02 removed; use stone-prd-rh02 alias from oclogin)
+CLUSTERS="stone-prd-rh02 kflux-ocp-p01 kflux-osp-p01 kflux-prd-es01 kflux-prd-rh03 kflux-rhel-p01 kflux-stg-es01 stone-prd-rh01 stone-prod-p01 stone-prod-p02 stone-stage-p01 stone-stg-rh01"
+
+FORCE=false
+DRY_RUN=false
+SELECTED_CLUSTER=""
+
+usage() {
+    cat <<'EOF'
+Usage: oclogin-all [options]
+
+Ensure all Konflux cluster contexts exist and are authenticated.
+
+Options:
+  --force           Delete Konflux cluster contexts, then re-login to all
+  --cluster NAME    Process a single cluster only
+  --dry-run         Show planned actions without logging in
+  -h, --help        Show this help
+
+Environment:
+  OCLOGIN               Path to oclogin helper (default: alongside this script)
+  REQUEST_TIMEOUT       Timeout for oc get ns checks (default: 15s)
+  LOGIN_WAIT_SECONDS    Max wait after web login (default: 120)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force)
+            FORCE=true
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            ;;
+        --cluster)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "ERROR: --cluster requires a cluster name" >&2
+                exit 1
+            fi
+            SELECTED_CLUSTER="$1"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: Unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
 done
 
-echo "--------- Listing all Contexts ---------"
-oc config get-contexts
+log() {
+    echo "$(date -u) INFO $*"
+}
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_GREEN=$'\033[0;32m'
+    C_RED=$'\033[0;31m'
+    C_YELLOW=$'\033[0;33m'
+    C_CYAN=$'\033[0;36m'
+    C_MAGENTA=$'\033[0;35m'
+else
+    C_RESET=""
+    C_BOLD=""
+    C_GREEN=""
+    C_RED=""
+    C_YELLOW=""
+    C_CYAN=""
+    C_MAGENTA=""
+fi
+
+cprint() {
+    local color="$1"
+    shift
+    printf '%b%b%b\n' "${color}" "$*" "${C_RESET}"
+}
+
+cluster_login_status() {
+    local cluster="$1"
+    local api_url ctx
+
+    if ! api_url="$(resolve_api_url "${cluster}")"; then
+        echo "unknown"
+        return 0
+    fi
+
+    if ctx="$(find_context_for_api "${api_url}")" && cluster_is_loggable "${ctx}"; then
+        echo "available"
+        return 0
+    fi
+
+    echo "unavailable"
+}
+
+print_cluster_status_board() {
+    local title="$1"
+    local cluster status
+    local -a available=()
+    local -a unavailable=()
+    local -a unknown=()
+
+    for cluster in ${CLUSTERS}; do
+        status="$(cluster_login_status "${cluster}")"
+        case "${status}" in
+            available)
+                available+=("${cluster}")
+                ;;
+            unavailable)
+                unavailable+=("${cluster}")
+                ;;
+            unknown)
+                unknown+=("${cluster}")
+                ;;
+        esac
+    done
+
+    echo
+    cprint "${C_BOLD}${C_CYAN}" "========== ${title} =========="
+    echo
+
+    cprint "${C_BOLD}${C_GREEN}" "LOGIN AVAILABLE (${#available[@]}):"
+    if [[ ${#available[@]} -eq 0 ]]; then
+        cprint "${C_GREEN}" "  (none)"
+    else
+        for cluster in "${available[@]}"; do
+            cprint "${C_GREEN}" "  [OK] ${cluster}"
+        done
+    fi
+    echo
+
+    cprint "${C_BOLD}${C_RED}" "LOGIN NOT AVAILABLE (${#unavailable[@]}):"
+    if [[ ${#unavailable[@]} -eq 0 ]]; then
+        cprint "${C_RED}" "  (none)"
+    else
+        for cluster in "${unavailable[@]}"; do
+            cprint "${C_RED}" "  [NEEDS LOGIN] ${cluster}"
+        done
+    fi
+
+    if [[ ${#unknown[@]} -gt 0 ]]; then
+        echo
+        cprint "${C_BOLD}${C_MAGENTA}" "UNKNOWN TO OCLOGIN (${#unknown[@]}):"
+        for cluster in "${unknown[@]}"; do
+            cprint "${C_MAGENTA}" "  [UNKNOWN] ${cluster}"
+        done
+    fi
+
+    echo
+    cprint "${C_BOLD}${C_YELLOW}" "Totals: ${#available[@]} available | ${#unavailable[@]} not available | ${#unknown[@]} unknown"
+    echo
+}
+
+normalize_url() {
+    local url="${1}"
+    url="${url%/}"
+    echo "${url}"
+}
+
+resolve_api_url() {
+    local cluster="$1"
+    local api_url
+
+    if ! api_url="$("${OCLOGIN}" urls "${cluster}" 2>/dev/null)"; then
+        return 1
+    fi
+    normalize_url "${api_url}"
+}
+
+find_context_for_api() {
+    local target_api="$1"
+    local ctx server
+
+    target_api="$(normalize_url "${target_api}")"
+
+    while IFS= read -r ctx; do
+        ctx="${ctx#context/}"
+        server="$(oc config view --context="${ctx}" --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"
+        if [[ "$(normalize_url "${server}")" == "${target_api}" ]]; then
+            echo "${ctx}"
+            return 0
+        fi
+    done < <(oc config get-contexts -o name 2>/dev/null || true)
+
+    return 1
+}
+
+cluster_is_loggable() {
+    local ctx="$1"
+    oc --context="${ctx}" get ns --request-timeout="${REQUEST_TIMEOUT}" >/dev/null 2>&1
+}
+
+delete_context_and_cluster() {
+    local ctx="$1"
+    local cluster_name
+
+    cluster_name="$(oc config view --context="${ctx}" --minify -o jsonpath='{.clusters[0].name}' 2>/dev/null || true)"
+
+    log "Deleting stale context \"${ctx}\""
+    oc config delete-context "${ctx}" >/dev/null 2>&1 || true
+
+    if [[ -n "${cluster_name}" ]]; then
+        oc config delete-cluster "${cluster_name}" >/dev/null 2>&1 || true
+    fi
+}
+
+delete_konflux_contexts() {
+    local cluster api_url ctx
+
+    echo "--------- Deleting Konflux cluster contexts ---------"
+    for cluster in ${CLUSTERS}; do
+        if ! api_url="$(resolve_api_url "${cluster}")"; then
+            log "Skipping delete for unknown cluster \"${cluster}\""
+            continue
+        fi
+        if ctx="$(find_context_for_api "${api_url}")"; then
+            delete_context_and_cluster "${ctx}"
+        fi
+    done
+    echo "--------- Finished deleting Konflux cluster contexts ---------"
+    echo
+}
+
+wait_for_login() {
+    local cluster="$1"
+    local api_url="$2"
+    local waited=0
+    local ctx
+
+    while [[ ${waited} -lt ${LOGIN_WAIT_SECONDS} ]]; do
+        if ctx="$(find_context_for_api "${api_url}")" && cluster_is_loggable "${ctx}"; then
+            echo "${ctx}"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+
+    log "Timed out waiting for login to \"${cluster}\""
+    return 1
+}
+
+declare -a SKIPPED=()
+declare -a LOGGED_IN=()
+declare -a FAILED=()
+declare -a CLUSTERS_TO_LOGIN=()
+
+classify_cluster() {
+    local cluster="$1"
+    local api_url ctx
+
+    echo "--------- Konflux cluster ${cluster} ---------"
+
+    if ! api_url="$(resolve_api_url "${cluster}")"; then
+        log "Unknown cluster \"${cluster}\" (not in oclogin list)"
+        FAILED+=("${cluster}")
+        echo
+        return 0
+    fi
+
+    if ctx="$(find_context_for_api "${api_url}")"; then
+        if cluster_is_loggable "${ctx}"; then
+            log "Already logged in (context \"${ctx}\")"
+            SKIPPED+=("${cluster}")
+            echo
+            return 0
+        fi
+
+        log "Stale context \"${ctx}\" for \"${cluster}\""
+        if [[ "${DRY_RUN}" == true ]]; then
+            log "Would delete stale context and re-login"
+            CLUSTERS_TO_LOGIN+=("${cluster}")
+            echo
+            return 0
+        fi
+
+        delete_context_and_cluster "${ctx}"
+    else
+        log "No kubeconfig context found for \"${cluster}\""
+        if [[ "${DRY_RUN}" == true ]]; then
+            log "Would login and create kubeconfig entry"
+            CLUSTERS_TO_LOGIN+=("${cluster}")
+            echo
+            return 0
+        fi
+    fi
+
+    CLUSTERS_TO_LOGIN+=("${cluster}")
+    echo
+}
+
+login_cluster() {
+    local cluster="$1"
+    local api_url ctx
+
+    echo "--------- Logging in to Konflux cluster ${cluster} ---------"
+
+    if ! api_url="$(resolve_api_url "${cluster}")"; then
+        log "Unknown cluster \"${cluster}\" (not in oclogin list)"
+        FAILED+=("${cluster}")
+        echo
+        return 1
+    fi
+
+    oclogin "${cluster}"
+
+    if ! ctx="$(wait_for_login "${cluster}" "${api_url}")"; then
+        log "Login verification failed for \"${cluster}\""
+        FAILED+=("${cluster}")
+        echo
+        return 1
+    fi
+
+    log "Verified login for \"${cluster}\" (context \"${ctx}\")"
+    LOGGED_IN+=("${cluster}")
+    echo
+    return 0
+}
+
+if [[ ! -x "${OCLOGIN}" ]]; then
+    echo "ERROR: oclogin not found or not executable at ${OCLOGIN}" >&2
+    exit 1
+fi
+
+if [[ -n "${SELECTED_CLUSTER}" ]]; then
+    CLUSTERS="${SELECTED_CLUSTER}"
+fi
+
+echo "--------- Existing contexts ---------"
+oc config get-contexts || true
+echo
+
+if [[ "${FORCE}" == true ]]; then
+    if [[ "${DRY_RUN}" == true ]]; then
+        log "Would delete Konflux cluster contexts (--force)"
+    else
+        delete_konflux_contexts
+    fi
+fi
+
+for KONFLUX_CLUSTER in ${CLUSTERS}; do
+    classify_cluster "${KONFLUX_CLUSTER}"
+done
+
+print_cluster_status_board "Cluster login status - BEFORE login"
+
+if [[ ${#CLUSTERS_TO_LOGIN[@]} -gt 0 ]]; then
+    if [[ "${DRY_RUN}" == true ]]; then
+        cprint "${C_BOLD}${C_YELLOW}" "Dry run: would log in to ${#CLUSTERS_TO_LOGIN[@]} cluster(s): ${CLUSTERS_TO_LOGIN[*]}"
+        echo
+    else
+        cprint "${C_BOLD}${C_YELLOW}" "Starting sequential login for ${#CLUSTERS_TO_LOGIN[@]} cluster(s)..."
+        echo
+
+        for KONFLUX_CLUSTER in "${CLUSTERS_TO_LOGIN[@]}"; do
+            login_cluster "${KONFLUX_CLUSTER}" || true
+        done
+    fi
+else
+    cprint "${C_GREEN}" "All clusters already have working login. Nothing to do."
+    echo
+fi
+
+print_cluster_status_board "Cluster login status - AFTER login"
+
+echo "--------- Run summary ---------"
+echo "Already logged in at start: ${#SKIPPED[@]}"
+if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+    printf '  %s\n' "${SKIPPED[@]}"
+fi
+echo "Logged in during this run: ${#LOGGED_IN[@]}"
+if [[ ${#LOGGED_IN[@]} -gt 0 ]]; then
+    printf '  %s\n' "${LOGGED_IN[@]}"
+fi
+if [[ "${DRY_RUN}" == true && ${#CLUSTERS_TO_LOGIN[@]} -gt 0 ]]; then
+    echo "Would login: ${#CLUSTERS_TO_LOGIN[@]}"
+    printf '  %s\n' "${CLUSTERS_TO_LOGIN[@]}"
+fi
+echo "Failed: ${#FAILED[@]}"
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+    printf '  %s\n' "${FAILED[@]}"
+fi
+echo
+
+echo "--------- Listing all contexts ---------"
+oc config get-contexts || true
+num_active_contexts="$(oc config get-contexts -o name 2>/dev/null | wc -l | tr -d ' ')"
+echo
+echo "Total number of active contexts = ${num_active_contexts}"
 echo "--------- Done ---------"
+
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+    exit 1
+fi
