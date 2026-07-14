@@ -15,10 +15,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 from oc_get_ooms import namespace_worker_oc
 
 
-def make_event(reason: str, pod_name: str, kind: str = "Pod", timestamp: str = "2026-06-20T12:00:00Z"):
+def make_event(
+    reason: str,
+    pod_name: str,
+    kind: str = "Pod",
+    timestamp: str = "2026-06-20T12:00:00Z",
+):
     return {
         "reason": reason,
-        "involvedObject": {"kind": kind, "name": pod_name, "namespace": "test-ns"},
+        "involvedObject": {
+            "kind": kind,
+            "name": pod_name,
+            "namespace": "test-ns",
+        },
         "eventTime": timestamp,
         "lastTimestamp": timestamp,
     }
@@ -27,7 +36,16 @@ def make_event(reason: str, pod_name: str, kind: str = "Pod", timestamp: str = "
 def make_pod_item(name: str, labels=None):
     return {
         "metadata": {"name": name, "labels": labels or {}},
-        "status": {"containerStatuses": [{"name": "main", "state": {"running": {}}, "lastState": {}, "restartCount": 0}]},
+        "status": {
+            "containerStatuses": [
+                {
+                    "name": "main",
+                    "state": {"running": {}},
+                    "lastState": {},
+                    "restartCount": 0,
+                }
+            ]
+        },
     }
 
 
@@ -44,7 +62,10 @@ def test_non_pod_events_are_ignored(mock_crash, mock_oom, mock_pods, mock_events
     ]
     mock_pods.return_value = [make_pod_item("managed-upgrade-operator-xyz")]
 
-    result = namespace_worker_oc("ctx", "openshift-managed-upgrade-operator", retries=1, oc_timeout_seconds=10)
+    result = namespace_worker_oc(
+        "ctx", "openshift-managed-upgrade-operator",
+        retries=1, oc_timeout_seconds=10,
+    )
 
     assert result is not None, "Should find the Pod event"
     assert "managed-upgrade-operator-xyz" in result, "Pod event should be included"
@@ -69,7 +90,9 @@ def test_event_only_pods_not_in_listing_are_dropped(mock_crash, mock_oom, mock_p
 
     assert result is not None
     assert "real-pod-abc12" in result, "Pod that exists in listing should be kept"
-    assert "ghost-pod-from-stale-event" not in result, "Event-only pod not in listing must be dropped"
+    assert "ghost-pod-from-stale-event" not in result, (
+        "Event-only pod not in listing must be dropped"
+    )
     print("PASS: Event-only pods not in listing are correctly dropped")
 
 
@@ -81,7 +104,14 @@ def test_pod_status_detected_pods_are_kept(mock_crash, mock_oom, mock_pods, mock
     """Pods found via pod status (oc_get_pods) should always be kept."""
     mock_events.return_value = []
     mock_pods.return_value = [make_pod_item("crash-pod-xyz")]
-    mock_oom.return_value = [{"pod": "crash-pod-xyz", "timestamp": "2026-06-20T12:00:00Z", "application": "", "component": ""}]
+    mock_oom.return_value = [
+        {
+            "pod": "crash-pod-xyz",
+            "timestamp": "2026-06-20T12:00:00Z",
+            "application": "",
+            "component": "",
+        }
+    ]
 
     result = namespace_worker_oc("ctx", "test-ns", retries=1, oc_timeout_seconds=10)
 
