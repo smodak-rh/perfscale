@@ -1180,7 +1180,12 @@ def namespace_worker_oc(
     for ev in all_events:
         reason = ev.get("reason", "")
         reason_lower = reason.lower()
-        pod = ev.get("involvedObject", {}).get("name")
+        involved = ev.get("involvedObject", {})
+        # Only process Pod events — ignore Node, DaemonSet, Deployment, etc.
+        # to prevent namespace misattribution (e.g. KONFLUX-14702).
+        if involved.get("kind") != "Pod":
+            continue
+        pod = involved.get("name")
         ts = ev.get("eventTime") or ev.get("lastTimestamp") or ev.get("firstTimestamp")
 
         if not pod or not ts:
@@ -1302,6 +1307,18 @@ def namespace_worker_oc(
         pod_map[p]["sources"].add("oc_get_pods")
         pod_map[p]["application"] = e.get("application", "") or pod_map[p].get("application", "")
         pod_map[p]["component"] = e.get("component", "") or pod_map[p].get("component", "")
+
+    # Drop event-only pods that don't exist in the pod listing — they indicate
+    # stale events or cross-namespace references that would cause namespace
+    # misattribution in downstream reports (e.g. KONFLUX-14702).
+    actual_pod_names = set(labels_map.keys())
+    if pod_map and actual_pod_names:
+        event_only = [
+            p for p, info in pod_map.items()
+            if info.get("sources", set()) == {"events"} and p not in actual_pod_names
+        ]
+        for p in event_only:
+            del pod_map[p]
 
     if pod_map:
         out_ns: dict[str, dict[str, Any]] = {}
