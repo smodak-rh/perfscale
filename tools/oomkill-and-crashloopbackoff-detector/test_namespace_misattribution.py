@@ -6,6 +6,7 @@ Verifies that namespace_worker_oc() correctly:
 1. Filters events by involvedObject.kind == "Pod"
 2. Drops event-only pods that don't exist in the namespace's pod listing
 """
+
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -63,8 +64,10 @@ def test_non_pod_events_are_ignored(mock_crash, mock_oom, mock_pods, mock_events
     mock_pods.return_value = [make_pod_item("managed-upgrade-operator-xyz")]
 
     result = namespace_worker_oc(
-        "ctx", "openshift-managed-upgrade-operator",
-        retries=1, oc_timeout_seconds=10,
+        "ctx",
+        "openshift-managed-upgrade-operator",
+        retries=1,
+        oc_timeout_seconds=10,
     )
 
     assert result is not None, "Should find the Pod event"

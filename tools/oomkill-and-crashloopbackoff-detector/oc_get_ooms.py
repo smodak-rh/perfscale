@@ -1314,7 +1314,8 @@ def namespace_worker_oc(
     actual_pod_names = set(labels_map.keys())
     if pod_map and actual_pod_names:
         event_only = [
-            p for p, info in pod_map.items()
+            p
+            for p, info in pod_map.items()
             if info.get("sources", set()) == {"events"} and p not in actual_pod_names
         ]
         for p in event_only:
