@@ -17,6 +17,8 @@ local testPhaseStubs = [
   '__results_measurements_HandleUser_',
   '__results_measurements_createApplication_',
   '__results_measurements_createComponent_',
+  '__results_measurements_createImageRepository_',
+  '__results_measurements_waitForImageRepositoryReady_',
   '__results_measurements_createIntegrationTestScenario_',
   '__results_measurements_createReleasePlanAdmission_',
   '__results_measurements_createReleasePlan_',
