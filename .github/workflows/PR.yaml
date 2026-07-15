@@ -21,5 +21,6 @@ jobs:
         run: |
           pre-commit --version
           jsonnet --version
+          jb --version
       - name: Run checks
         run: make check-all

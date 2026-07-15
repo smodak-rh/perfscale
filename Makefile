@@ -15,6 +15,10 @@ bootstrap:
 	uv tool install pre-commit || uv tool upgrade pre-commit
 	@echo "==> Installing jsonnet..."
 	go install github.com/google/go-jsonnet/cmd/jsonnet@v0.22.0
+	@echo "==> Installing jsonnet-bundler..."
+	go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
+	@echo "==> Installing grafonnet vendor dependencies..."
+	cd grafonnet-workdir && $(HOME)/go/bin/jb install
 	@echo "==> Installing pre-commit hooks..."
 	@PATH="$(HOME)/.local/bin:$(PATH)" pre-commit install
 	@echo ""
