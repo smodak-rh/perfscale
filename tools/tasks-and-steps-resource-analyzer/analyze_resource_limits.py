@@ -949,22 +949,90 @@ def _spinner_thread(stop_event, progress_data=None, progress_lock=None, total_cl
     idx = 0
     while not stop_event.is_set():
         percentage = 0
+        pods_listed = 0
+        pods_queried = 0
+        pods_kept = 0
         if progress_data and total_clusters > 0 and progress_lock:
             with progress_lock:
                 completed_count = len(progress_data.get("completed", []))
+                pods_listed = progress_data.get("pods_listed", 0)
+                pods_queried = progress_data.get("pods_queried", 0)
+                pods_kept = progress_data.get("pods_kept", 0)
             percentage = int((completed_count / total_clusters) * 100)
-        message = (
-            f"Getting information from all clusters: (Completed No. of clusters: {percentage}%)"
-            f" {spinner_chars[idx % len(spinner_chars)]}"
-            if percentage > 0
-            else f"Getting information from all clusters: {spinner_chars[idx % len(spinner_chars)]}"
-        )
+        spin = spinner_chars[idx % len(spinner_chars)]
+        if percentage > 0:
+            message = (
+                f"Getting information from all clusters: "
+                f"(Completed No. of clusters: {percentage}%) "
+                f"[listed={pods_listed} queried={pods_queried} kept={pods_kept}] {spin}"
+            )
+        else:
+            message = (
+                f"Getting information from all clusters: "
+                f"[listed={pods_listed} queried={pods_queried} kept={pods_kept}] {spin}"
+            )
         print(f"\r{message}", end="", file=sys.stderr)
         sys.stderr.flush()
         idx += 1
         time.sleep(0.2)
     print("\r\033[K", end="", file=sys.stderr)
     sys.stderr.flush()
+
+
+def format_promql_duration(seconds):
+    """Format a lookback window for PromQL range selectors (e.g. 1d, 6h, 90m)."""
+    seconds = int(seconds)
+    if seconds <= 0:
+        return "0s"
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
+def format_lookback_label(days, hours):
+    """Human-readable lookback like '7d', '6h', or '1d+6h'."""
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    return "+".join(parts) if parts else "0"
+
+
+def resolve_lookback_seconds(days, hours):
+    """Combine --days and --hours into a total lookback in seconds."""
+    days = int(days or 0)
+    hours = int(hours or 0)
+    if days < 0 or hours < 0:
+        raise ValueError("--days and --hours must be >= 0")
+    total = days * 86400 + hours * 3600
+    if total <= 0:
+        raise ValueError("Lookback window must be > 0 (use --days and/or --hours)")
+    return total
+
+
+def _empty_collection_counters():
+    return {
+        "pods_listed": 0,
+        "pods_queried": 0,
+        "pods_kept": 0,
+        "query_failures": 0,
+        "empty_metrics": 0,
+        "parse_errors": 0,
+        "list_failures": 0,
+    }
+
+
+def _merge_counters(dest, src):
+    for key, value in src.items():
+        dest[key] = dest.get(key, 0) + value
+
+
+DEBUG_SKIP_SAMPLE_LIMIT = 15
 
 
 def parse_csv_data(csv_text):
@@ -3162,6 +3230,8 @@ def collect_individual_pod_executions(
     task_name,
     steps,
     days=7,
+    hours=0,
+    lookback_seconds=None,
     parallel_clusters=None,
     debug=False,
     current_resources=None,
@@ -3175,50 +3245,87 @@ def collect_individual_pod_executions(
     - Pod start timestamp (or first metric timestamp)
     - Current requests/limits from YAML when current_resources is provided
 
+    Pods are listed once per cluster (not once per step). Returns
+    (executions_list, collection_stats).
+
     Args:
         task_name: Task name
         steps: List of step names (without 'step-' prefix)
-        days: Number of days for data collection
+        days: Whole days in the lookback window
+        hours: Additional hours in the lookback window (clubbed with days)
+        lookback_seconds: Optional explicit lookback; overrides days/hours when set
         parallel_clusters: Number of parallel workers (None for serial)
-        debug: Enable debug output
+        debug: Enable debug output including capped skip-reason samples
         current_resources: Optional dict step_name ->
             {requests: {memory, cpu}, limits: {memory, cpu}}
                           from extract_task_info(); used to add mem_requests_k8s, etc. to each
                           execution.
         pll_queries: Number of Prometheus queries to run in parallel per pod (1-4).
-                     Default 2. The 4 per-pod queries (mem, cpu, io_read, io_write) are dispatched
-                     to a small ThreadPoolExecutor of this size. Max useful value is 4 (one per
-                     metric).
-                     Max concurrent subprocesses on the machine = parallel_clusters × pll_queries.
 
     Returns:
-        List of dictionaries, each representing one pod execution with:
-        - task, step, component, application, cluster, pod, namespace, timestamp
-        - memory_mb, cpu_cores
-        - mem_requests_k8s, cpu_requests_k8s, mem_limits_k8s,
-          cpu_limits_k8s (when current_resources provided)
+        Tuple (list of execution dicts, collection_stats dict)
     """
     script_dir = Path(__file__).parent
     wrapper_path = script_dir / "wrapper_for_promql_for_all_clusters.sh"
 
+    empty_stats = {
+        **_empty_collection_counters(),
+        "per_cluster": {},
+        "debug_samples": [],
+        "lookback_seconds": 0,
+        "lookback_label": "0",
+    }
+
     if not wrapper_path.exists():
-        return []
+        return [], empty_stats
+
+    if lookback_seconds is None:
+        lookback_seconds = resolve_lookback_seconds(days, hours)
+    lookback_seconds = int(lookback_seconds)
+    range_str = format_promql_duration(lookback_seconds)
+    lookback_label = format_lookback_label(days, hours)
+    # get_component_for_pod.py still expects integer days
+    component_days = max(1, (lookback_seconds + 86399) // 86400)
 
     all_executions = []
+    collection_stats = {
+        **_empty_collection_counters(),
+        "per_cluster": {},
+        "debug_samples": [],
+        "lookback_seconds": lookback_seconds,
+        "lookback_label": lookback_label,
+    }
+    samples_lock = Lock()
+
+    def add_debug_sample(reason, cluster_name, pod_name="", namespace="", step="", detail=""):
+        if not debug:
+            return
+        with samples_lock:
+            if len(collection_stats["debug_samples"]) >= DEBUG_SKIP_SAMPLE_LIMIT:
+                return
+            collection_stats["debug_samples"].append(
+                {
+                    "reason": reason,
+                    "cluster": cluster_name,
+                    "pod": pod_name,
+                    "namespace": namespace,
+                    "step": step,
+                    "detail": detail,
+                }
+            )
 
     # Extract cluster list
     clusters_raw = extract_cluster_list(wrapper_path)
     if not clusters_raw:
-        return []
+        return [], collection_stats
 
     clusters = list(dict.fromkeys([c.strip() for c in clusters_raw if c and c.strip()]))
 
     def process_cluster_for_detailed_data(cluster_ctx):
         """Process a single cluster to get detailed pod execution data."""
+        cluster_stats = _empty_collection_counters()
+        cluster_name = get_cluster_display_name(cluster_ctx)
         try:
-            cluster_name = get_cluster_display_name(cluster_ctx)
-
-            # Get token and prometheus host for this cluster
             original_kubeconfig = os.environ.get("KUBECONFIG", os.path.expanduser("~/.kube/config"))
             temp_kubeconfig = (
                 script_dir
@@ -3232,7 +3339,6 @@ def collect_individual_pod_executions(
                 env = os.environ.copy()
                 env["KUBECONFIG"] = str(temp_kubeconfig)
 
-                # Switch to cluster context
                 subprocess.run(
                     ["kubectl", "config", "use-context", cluster_ctx],
                     capture_output=True,
@@ -3240,7 +3346,6 @@ def collect_individual_pod_executions(
                     timeout=10,
                 )
 
-                # Get token and prometheus host
                 token_result = subprocess.run(
                     ["oc", "whoami", "--show-token"],
                     capture_output=True,
@@ -3249,7 +3354,13 @@ def collect_individual_pod_executions(
                     timeout=10,
                 )
                 if token_result.returncode != 0:
-                    return []
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "auth_failure",
+                        cluster_name,
+                        detail="oc whoami --show-token failed",
+                    )
+                    return [], cluster_stats
 
                 token = token_result.stdout.strip()
 
@@ -3271,113 +3382,176 @@ def collect_individual_pod_executions(
                     timeout=10,
                 )
                 if prom_result.returncode != 0:
-                    return []
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "prometheus_route_failure",
+                        cluster_name,
+                        detail="failed to get prometheus-k8s route",
+                    )
+                    return [], cluster_stats
 
                 prom_host = prom_result.stdout.strip()
                 if not prom_host:
-                    return []
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "prometheus_route_failure",
+                        cluster_name,
+                        detail="empty prometheus host",
+                    )
+                    return [], cluster_stats
 
-                # Calculate time range
                 end_time = int(time.time())
-                start_time = end_time - (days * 86400)
-                range_str = f"{days}d"
+                start_time = end_time - lookback_seconds
 
                 cluster_executions = []
 
-                # Process each step
+                # List pods once per cluster/task (not once per step).
+                list_pods_script = script_dir / "list_pods_for_a_particular_task.py"
+                if not list_pods_script.exists():
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "list_script_missing",
+                        cluster_name,
+                        detail=str(list_pods_script),
+                    )
+                    return [], cluster_stats
+
+                list_result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(list_pods_script),
+                        token,
+                        prom_host,
+                        task_name,
+                        str(end_time),
+                        str(lookback_seconds),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    timeout=60,
+                )
+
+                if list_result.returncode != 0:
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "list_pods_failure",
+                        cluster_name,
+                        detail=f"rc={list_result.returncode}",
+                    )
+                    return [], cluster_stats
+
+                try:
+                    pods_data = json.loads(list_result.stdout)
+                    pods = []
+                    seen = set()
+                    if "data" in pods_data and "result" in pods_data["data"]:
+                        for result in pods_data["data"]["result"]:
+                            pod_name = result.get("metric", {}).get("pod", "")
+                            namespace = result.get("metric", {}).get("namespace", "")
+                            if not pod_name:
+                                continue
+                            key = (pod_name, namespace)
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            pods.append(key)
+                except (json.JSONDecodeError, KeyError) as e:
+                    cluster_stats["list_failures"] += 1
+                    add_debug_sample(
+                        "list_pods_parse_error",
+                        cluster_name,
+                        detail=str(e),
+                    )
+                    return [], cluster_stats
+
+                cluster_stats["pods_listed"] = len(pods)
+                if debug:
+                    print(
+                        f"DEBUG: Found {len(pods)} unique pods for task {task_name} "
+                        f"in cluster {cluster_name} (lookback={lookback_label})",
+                        file=sys.stderr,
+                    )
+
+                # Early exit: no pods on this cluster.
+                if not pods:
+                    return [], cluster_stats
+
+                query_script = script_dir / "query_prometheus_range.py"
+                if not query_script.exists():
+                    cluster_stats["query_failures"] += len(pods) * len(steps)
+                    add_debug_sample(
+                        "query_script_missing",
+                        cluster_name,
+                        detail=str(query_script),
+                    )
+                    return [], cluster_stats
+
                 for step in steps:
                     step_name = f"step-{step}" if not step.startswith("step-") else step
 
-                    # List all pods for this task and step
-                    list_pods_script = script_dir / "list_pods_for_a_particular_task.py"
-                    if not list_pods_script.exists():
-                        continue
-
-                    list_result = subprocess.run(
-                        [
-                            sys.executable,
-                            str(list_pods_script),
-                            token,
-                            prom_host,
-                            task_name,
-                            str(end_time),
-                            str(days),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        env=env,
-                        timeout=60,
-                    )
-
-                    if list_result.returncode != 0:
-                        continue
-
-                    try:
-                        pods_data = json.loads(list_result.stdout)
-                        pods = []
-                        if "data" in pods_data and "result" in pods_data["data"]:
-                            for result in pods_data["data"]["result"]:
-                                pod_name = result.get("metric", {}).get("pod", "")
-                                namespace = result.get("metric", {}).get("namespace", "")
-                                if pod_name:
-                                    pods.append((pod_name, namespace))
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-
-                    if debug:
-                        print(
-                            f"DEBUG: Found {len(pods)} pods for step {step} in cluster"
-                            f" {cluster_name}",
-                            file=sys.stderr,
-                        )
-
-                    # For each pod, get max memory, CPU, and disk I/O during its lifetime
                     for pod_name, namespace in pods:
-                        # Query max memory for this pod over the time range
+                        cluster_stats["pods_queried"] += 1
                         ns_filter = 'namespace=~".*-tenant"'
                         labels = f'container="{step_name}",pod="{pod_name}",{ns_filter}'
+                        # f-string: {{{labels}}} -> {labels=...}; five braces
+                        # would emit invalid PromQL {{...}}.
                         mem_query = (
                             f"max_over_time("
                             f"container_memory_working_set_bytes"
-                            f"{{{{{labels}}}}}[{range_str}])"
+                            f"{{{labels}}}[{range_str}])"
                         )
-                        # Query max CPU for this pod
                         cpu_query = (
                             f"max_over_time(rate("
                             f"container_cpu_usage_seconds_total"
-                            f"{{{{{labels}}}}}[5m])"
+                            f"{{{labels}}}[5m])"
                             f"[{range_str}:5m])"
                         )
-                        # Finding 4: disk I/O -- peak read/write (MB/s)
                         io_read_query = (
                             f"max_over_time(rate("
                             f"container_fs_reads_bytes_total"
-                            f"{{{{{labels}}}}}[5m])"
+                            f"{{{labels}}}[5m])"
                             f"[{range_str}:5m])"
                         )
                         io_write_query = (
                             f"max_over_time(rate("
                             f"container_fs_writes_bytes_total"
-                            f"{{{{{labels}}}}}[5m])"
+                            f"{{{labels}}}[5m])"
                             f"[{range_str}:5m])"
                         )
 
-                        query_script = script_dir / "query_prometheus_range.py"
-                        if not query_script.exists():
-                            continue
+                        def _stderr_snip(proc_or_exc, limit=280):
+                            if isinstance(proc_or_exc, Exception):
+                                return f"{type(proc_or_exc).__name__}: {proc_or_exc}"[:limit]
+                            err = (getattr(proc_or_exc, "stderr", None) or "").strip()
+                            if not err:
+                                return ""
+                            # Prefer the last non-empty line (often the real error).
+                            lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+                            snip = lines[-1] if lines else err
+                            return snip.replace("\n", " ")[:limit]
 
-                        # Run all 4 per-pod queries concurrently using a small inner thread pool.
-                        # Each thread calls subprocess.run() for one metric — no shared mutable
-                        # state, so results are collected safely into a dict keyed by metric name.
                         def _run_query(metric_cmd_pair):
+                            """Run one PromQL helper; retry transient HTTP/connection failures."""
                             metric_name, cmd = metric_cmd_pair
-                            try:
-                                proc = subprocess.run(
-                                    cmd, capture_output=True, text=True, env=env, timeout=60
-                                )
-                                return metric_name, proc
-                            except Exception as exc:
-                                return metric_name, exc
+                            last = None
+                            for attempt in range(3):
+                                try:
+                                    proc = subprocess.run(
+                                        cmd,
+                                        capture_output=True,
+                                        text=True,
+                                        env=env,
+                                        timeout=60,
+                                    )
+                                    last = proc
+                                    if proc.returncode == 0:
+                                        return metric_name, proc
+                                except Exception as exc:
+                                    last = exc
+                                if attempt < 2:
+                                    time.sleep(0.4 * (attempt + 1))
+                            return metric_name, last
 
                         query_cmds = [
                             (
@@ -3443,17 +3617,51 @@ def collect_individual_pod_executions(
                         io_read_result = query_results.get("io_read")
                         io_write_result = query_results.get("io_write")
 
-                        if (
-                            isinstance(mem_result, Exception)
-                            or isinstance(cpu_result, Exception)
-                            or mem_result.returncode != 0
-                            or cpu_result.returncode != 0
-                        ):
+                        mem_ok = (
+                            not isinstance(mem_result, Exception)
+                            and getattr(mem_result, "returncode", 1) == 0
+                            and (mem_result.stdout or "").strip()
+                        )
+                        # Memory is required; CPU/IO failures are non-fatal (cpu_cores=0).
+                        if not mem_ok:
+                            cluster_stats["query_failures"] += 1
+                            detail_parts = []
+                            if isinstance(mem_result, Exception):
+                                detail_parts.append(f"mem={type(mem_result).__name__}")
+                            else:
+                                detail_parts.append(
+                                    f"mem_rc={getattr(mem_result, 'returncode', '?')}"
+                                )
+                            snip = _stderr_snip(mem_result)
+                            if snip:
+                                detail_parts.append(f"mem_err={snip}")
+                            if isinstance(cpu_result, Exception):
+                                detail_parts.append(f"cpu={type(cpu_result).__name__}")
+                            elif getattr(cpu_result, "returncode", 0) != 0:
+                                detail_parts.append(f"cpu_rc={cpu_result.returncode}")
+                                cpu_snip = _stderr_snip(cpu_result)
+                                if cpu_snip:
+                                    detail_parts.append(f"cpu_err={cpu_snip}")
+                            add_debug_sample(
+                                "query_failure",
+                                cluster_name,
+                                pod_name=pod_name,
+                                namespace=namespace,
+                                step=step,
+                                detail=", ".join(detail_parts) or "mem query failed",
+                            )
                             continue
 
                         try:
                             mem_data = json.loads(mem_result.stdout)
-                            cpu_data = json.loads(cpu_result.stdout)
+                            if (
+                                not isinstance(cpu_result, Exception)
+                                and getattr(cpu_result, "returncode", 1) == 0
+                                and (cpu_result.stdout or "").strip()
+                            ):
+                                cpu_data = json.loads(cpu_result.stdout)
+                            else:
+                                cpu_data = {"data": {"result": []}}
                             io_read_data = (
                                 json.loads(io_read_result.stdout)
                                 if (
@@ -3473,11 +3681,10 @@ def collect_individual_pod_executions(
                                 else {}
                             )
 
-                            # Get max values and first timestamp
                             mem_max = 0
                             cpu_max = 0
-                            io_read_max_bytes_s = 0  # bytes/s
-                            io_write_max_bytes_s = 0  # bytes/s
+                            io_read_max_bytes_s = 0
+                            io_write_max_bytes_s = 0
                             first_timestamp = None
 
                             mem_series = mem_data.get("data", {}).get("result", [])
@@ -3485,23 +3692,21 @@ def collect_individual_pod_executions(
                             io_read_series = io_read_data.get("data", {}).get("result", [])
                             io_write_series = io_write_data.get("data", {}).get("result", [])
 
-                            # Extract max memory and first timestamp
+                            matched_mem_series = False
                             if mem_series:
                                 for series in mem_series:
                                     metric = series.get("metric", {})
                                     if metric.get("pod") == pod_name:
+                                        matched_mem_series = True
                                         values = series.get("values", [])
                                         if values:
-                                            # Get first timestamp
                                             if first_timestamp is None:
                                                 first_timestamp = float(values[0][0])
-                                            # Get max memory value
                                             for _ts, val in values:
                                                 mem_bytes = float(val) if val else 0
                                                 if mem_bytes > mem_max:
                                                     mem_max = mem_bytes
 
-                            # Extract max CPU
                             if cpu_series:
                                 for series in cpu_series:
                                     metric = series.get("metric", {})
@@ -3512,7 +3717,6 @@ def collect_individual_pod_executions(
                                             if cpu_val > cpu_max:
                                                 cpu_max = cpu_val
 
-                            # Extract max disk I/O read (bytes/s -> MB/s)
                             for series in io_read_series:
                                 if series.get("metric", {}).get("pod") == pod_name:
                                     for _ts, val in series.get("values", []):
@@ -3520,7 +3724,6 @@ def collect_individual_pod_executions(
                                         if v > io_read_max_bytes_s:
                                             io_read_max_bytes_s = v
 
-                            # Extract max disk I/O write (bytes/s -> MB/s)
                             for series in io_write_series:
                                 if series.get("metric", {}).get("pod") == pod_name:
                                     for _ts, val in series.get("values", []):
@@ -3528,23 +3731,43 @@ def collect_individual_pod_executions(
                                         if v > io_write_max_bytes_s:
                                             io_write_max_bytes_s = v
 
-                            # If no data found, skip this pod
                             if mem_max == 0 and first_timestamp is None:
+                                cluster_stats["empty_metrics"] += 1
+                                if mem_series and not matched_mem_series:
+                                    reason = "pod_label_mismatch"
+                                    detail = (
+                                        f"mem_series={len(mem_series)} but none matched "
+                                        f"pod={pod_name} container={step_name}"
+                                    )
+                                elif mem_series and matched_mem_series:
+                                    reason = "empty_values"
+                                    detail = f"matched series had no values container={step_name}"
+                                else:
+                                    reason = "empty_metrics"
+                                    detail = f"no container_memory series for container={step_name}"
+                                add_debug_sample(
+                                    reason,
+                                    cluster_name,
+                                    pod_name=pod_name,
+                                    namespace=namespace,
+                                    step=step,
+                                    detail=detail,
+                                )
                                 continue
 
-                            # Extract component and application
                             component, application = extract_component_from_pod(
-                                pod_name, namespace, token, prom_host, end_time, days
+                                pod_name,
+                                namespace,
+                                token,
+                                prom_host,
+                                end_time,
+                                component_days,
                             )
 
-                            # Convert memory from bytes to MB
                             mem_mb = mem_max / (1024 * 1024)
-
-                            # Convert I/O from bytes/s to MB/s
                             io_read_mbps = round(io_read_max_bytes_s / (1024 * 1024), 3)
                             io_write_mbps = round(io_write_max_bytes_s / (1024 * 1024), 3)
 
-                            # Use first timestamp or current time as fallback
                             if first_timestamp:
                                 exec_timestamp = datetime.fromtimestamp(first_timestamp).strftime(
                                     "%Y-%m-%d %H:%M:%S"
@@ -3552,8 +3775,6 @@ def collect_individual_pod_executions(
                             else:
                                 exec_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                            # Current requests/limits from YAML (Kubernetes format e.g. 512Mi,
-                            # 1000m)
                             res = (current_resources or {}).get(step, {}) or {}
                             req = res.get("requests") or {}
                             lim = res.get("limits") or {}
@@ -3582,15 +3803,26 @@ def collect_individual_pod_executions(
                                     "cpu_limits_k8s": cpu_lim_k8s,
                                 }
                             )
+                            cluster_stats["pods_kept"] += 1
 
                         except (json.JSONDecodeError, KeyError, ValueError) as e:
+                            cluster_stats["parse_errors"] += 1
+                            add_debug_sample(
+                                "parse_error",
+                                cluster_name,
+                                pod_name=pod_name,
+                                namespace=namespace,
+                                step=step,
+                                detail=str(e),
+                            )
                             if debug:
                                 print(
-                                    f"DEBUG: Error processing pod {pod_name}: {e}", file=sys.stderr
+                                    f"DEBUG: Error processing pod {pod_name}: {e}",
+                                    file=sys.stderr,
                                 )
                             continue
 
-                return cluster_executions
+                return cluster_executions, cluster_stats
 
             finally:
                 if temp_kubeconfig.exists():
@@ -3599,11 +3831,21 @@ def collect_individual_pod_executions(
         except Exception as e:
             if debug:
                 print(f"DEBUG: Error processing cluster {cluster_ctx}: {e}", file=sys.stderr)
-            return []
+            cluster_stats["list_failures"] += 1
+            add_debug_sample(
+                "cluster_error",
+                cluster_name,
+                detail=str(e),
+            )
+            return [], cluster_stats
 
-    # Progress spinner during collection
     total_clusters = len(clusters)
-    progress_data = {"completed": []}
+    progress_data = {
+        "completed": [],
+        "pods_listed": 0,
+        "pods_queried": 0,
+        "pods_kept": 0,
+    }
     progress_lock = Lock()
     spinner_stop = Event()
     spinner_thread = Thread(
@@ -3621,17 +3863,29 @@ def collect_individual_pod_executions(
                 }
                 for future in as_completed(futures):
                     cluster_ctx = futures[future]
-                    executions = future.result()
+                    executions, cluster_stats = future.result()
+                    display = get_cluster_display_name(cluster_ctx)
                     with progress_lock:
-                        if get_cluster_display_name(cluster_ctx) not in progress_data["completed"]:
-                            progress_data["completed"].append(get_cluster_display_name(cluster_ctx))
+                        if display not in progress_data["completed"]:
+                            progress_data["completed"].append(display)
+                        progress_data["pods_listed"] += cluster_stats.get("pods_listed", 0)
+                        progress_data["pods_queried"] += cluster_stats.get("pods_queried", 0)
+                        progress_data["pods_kept"] += cluster_stats.get("pods_kept", 0)
+                    collection_stats["per_cluster"][display] = cluster_stats
+                    _merge_counters(collection_stats, cluster_stats)
                     all_executions.extend(executions)
         else:
             for cluster in clusters:
-                executions = process_cluster_for_detailed_data(cluster)
+                executions, cluster_stats = process_cluster_for_detailed_data(cluster)
+                display = get_cluster_display_name(cluster)
                 with progress_lock:
-                    if get_cluster_display_name(cluster) not in progress_data["completed"]:
-                        progress_data["completed"].append(get_cluster_display_name(cluster))
+                    if display not in progress_data["completed"]:
+                        progress_data["completed"].append(display)
+                    progress_data["pods_listed"] += cluster_stats.get("pods_listed", 0)
+                    progress_data["pods_queried"] += cluster_stats.get("pods_queried", 0)
+                    progress_data["pods_kept"] += cluster_stats.get("pods_kept", 0)
+                collection_stats["per_cluster"][display] = cluster_stats
+                _merge_counters(collection_stats, cluster_stats)
                 all_executions.extend(executions)
     finally:
         spinner_stop.set()
@@ -3642,6 +3896,41 @@ def collect_individual_pod_executions(
             file=sys.stderr,
         )
         print("=" * 80, file=sys.stderr)
+        print(
+            "Collection summary: "
+            f"listed={collection_stats['pods_listed']} "
+            f"queried={collection_stats['pods_queried']} "
+            f"kept={collection_stats['pods_kept']} "
+            f"query_failures={collection_stats['query_failures']} "
+            f"empty_metrics={collection_stats['empty_metrics']} "
+            f"parse_errors={collection_stats['parse_errors']} "
+            f"list_failures={collection_stats['list_failures']}",
+            file=sys.stderr,
+        )
+        if collection_stats["per_cluster"]:
+            print("Per-cluster collection stats:", file=sys.stderr)
+            for cl in sorted(collection_stats["per_cluster"]):
+                cs = collection_stats["per_cluster"][cl]
+                print(
+                    f"  {cl}: listed={cs['pods_listed']} queried={cs['pods_queried']} "
+                    f"kept={cs['pods_kept']} query_failures={cs['query_failures']} "
+                    f"empty_metrics={cs['empty_metrics']}",
+                    file=sys.stderr,
+                )
+        if debug and collection_stats["debug_samples"]:
+            print(
+                f"DEBUG: Skip samples "
+                f"(showing {len(collection_stats['debug_samples'])}/"
+                f"{DEBUG_SKIP_SAMPLE_LIMIT} capped):",
+                file=sys.stderr,
+            )
+            for sample in collection_stats["debug_samples"]:
+                print(
+                    f"  [{sample['reason']}] cluster={sample['cluster']} "
+                    f"step={sample['step']} ns={sample['namespace']} "
+                    f"pod={sample['pod']} detail={sample['detail']}",
+                    file=sys.stderr,
+                )
         if all_executions:
             print(
                 f"Collected data from {len(progress_data['completed'])} cluster(s), total pod"
@@ -3650,7 +3939,7 @@ def collect_individual_pod_executions(
             )
         print(file=sys.stderr)
 
-    return all_executions
+    return all_executions, collection_stats
 
 
 def generate_diff_patch(original_yaml, updated_yaml, file_path_or_url):
@@ -4396,6 +4685,10 @@ Examples:
     ./analyze_resource_limits.py --file /path/to/buildah.yaml --days 10
     ./analyze_resource_limits.py --file /path/to/buildah.yaml --days 30
 
+    # Sub-day / combined lookback (--days and --hours are clubbed):
+    ./analyze_resource_limits.py --file /path/to/buildah.yaml --days 0 --hours 6
+    ./analyze_resource_limits.py --file /path/to/buildah.yaml --days 1 --hours 6
+
     # Combine options (--base is ignored in Phase 1):
     ./analyze_resource_limits.py --file /path/to/buildah.yaml --margin 15 --days 10
 
@@ -4480,12 +4773,28 @@ Examples:
         ),
     )
     parser.add_argument(
-        "--days", type=int, default=7, help="Number of days for data collection (default: 7)"
+        "--days",
+        type=int,
+        default=7,
+        help=(
+            "Whole days in the lookback window (default: 7). "
+            "Combined with --hours (total = days*24h + hours). Use --days 0 with --hours for "
+            "sub-day windows."
+        ),
+    )
+    parser.add_argument(
+        "--hours",
+        type=int,
+        default=0,
+        help=(
+            "Additional hours in the lookback window (default: 0). "
+            "Clubbed with --days, e.g. --days 1 --hours 6 => 30h total."
+        ),
     )
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug output showing detailed processing information",
+        help=("Enable debug output including pod counts and capped PromQL skip-reason samples"),
     )
     parser.add_argument(
         "--dry-run",
@@ -4513,6 +4822,14 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    try:
+        lookback_seconds = resolve_lookback_seconds(args.days, args.hours)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    lookback_label = format_lookback_label(args.days, args.hours)
+    lookback_days_fraction = lookback_seconds / 86400.0
 
     # Phase 2: --update (requires --file)
     if args.update:
@@ -4786,10 +5103,12 @@ Examples:
         # Single source of truth: collect detailed per-pod data, then derive CSV for analysis
         parallel_workers = args.pll_clusters if args.pll_clusters and not args.update else None
         pll_queries = max(1, min(4, args.pll_queries)) if args.pll_queries else 2
-        detailed_executions = collect_individual_pod_executions(
+        detailed_executions, collection_stats = collect_individual_pod_executions(
             final_task_name,
             steps_for_collection,
             days=args.days,
+            hours=args.hours,
+            lookback_seconds=lookback_seconds,
             parallel_clusters=parallel_workers,
             debug=args.debug,
             current_resources=current_resources,
@@ -4797,7 +5116,9 @@ Examples:
         )
 
         # Finding 2: compute and print cluster data coverage report
-        cluster_coverage_report = compute_cluster_coverage_report(detailed_executions, args.days)
+        cluster_coverage_report = compute_cluster_coverage_report(
+            detailed_executions, lookback_days_fraction
+        )
         if cluster_coverage_report:
             print("\n" + "=" * 80, file=sys.stderr)
             print("Cluster Data Coverage Report (oldest data point per cluster):", file=sys.stderr)
@@ -4816,7 +5137,7 @@ Examples:
                     any_short = True
             if any_short:
                 print(
-                    f"\n  WARNING: Some clusters returned fewer than {args.days} days of data.",
+                    f"\n  WARNING: Some clusters returned fewer than {lookback_label} of data.",
                     file=sys.stderr,
                 )
                 print(
@@ -4827,13 +5148,36 @@ Examples:
 
         csv_data = detailed_executions_to_csv(detailed_executions)
         if not csv_data or not csv_data.strip() or csv_data.count("\n") < 1:
-            print(
-                "Error: No data from detailed collection (no pods or no metrics).", file=sys.stderr
-            )
+            listed = collection_stats.get("pods_listed", 0)
+            queried = collection_stats.get("pods_queried", 0)
+            kept = collection_stats.get("pods_kept", 0)
+            qfail = collection_stats.get("query_failures", 0)
+            empty = collection_stats.get("empty_metrics", 0)
+            parse_err = collection_stats.get("parse_errors", 0)
+            list_fail = collection_stats.get("list_failures", 0)
+            if listed == 0:
+                print(
+                    "Error: No data from detailed collection — 0 pods listed across all clusters.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Error: No data from detailed collection — "
+                    f"{listed} pods listed, {queried} pod×step queries, "
+                    f"{kept} kept "
+                    f"(query_failures={qfail}, empty_metrics={empty}, "
+                    f"parse_errors={parse_err}, list_failures={list_fail}).",
+                    file=sys.stderr,
+                )
             if steps_for_collection:
                 print(f"\nTask: {final_task_name}", file=sys.stderr)
                 print(f"Steps: {', '.join(steps_for_collection)}", file=sys.stderr)
-                print(f"Days: {args.days}", file=sys.stderr)
+                print(f"Lookback: {lookback_label}", file=sys.stderr)
+            if args.debug and collection_stats.get("debug_samples"):
+                print(
+                    "\nRe-run tip: inspect DEBUG skip samples above for root cause.",
+                    file=sys.stderr,
+                )
             sys.exit(1)
         # Show table (same as wrapper path)
         format_script = Path(__file__).parent / "format_csv_table.py"
@@ -4879,11 +5223,14 @@ Examples:
             file=sys.stderr,
         )
         print("  3. Cluster connectivity issues (try --dry-run to check)", file=sys.stderr)
-        print("  4. Time period too short (try increasing --days)", file=sys.stderr)
+        print(
+            "  4. Time period too short (try increasing --days / --hours)",
+            file=sys.stderr,
+        )
         if args.file:
             print(f"\nTask: {task_name}", file=sys.stderr)
             print(f"Steps: {', '.join(steps)}", file=sys.stderr)
-            print(f"Days: {args.days}", file=sys.stderr)
+            print(f"Lookback: {lookback_label}", file=sys.stderr)
         # Show first few lines of CSV to help debug
         if csv_data:
             csv_lines = csv_data.strip().split("\n")
@@ -4958,7 +5305,7 @@ Examples:
             date_str,
             steps_without_observability_data=steps_missing_obs,
             cluster_coverage_report=cluster_coverage_report if args.file else None,
-            days_requested=args.days if args.file else None,
+            days_requested=lookback_days_fraction if args.file else None,
         )
         print("\nSaved analyzed data:", file=sys.stderr)
         print(f"  - {analyzed_html_path}", file=sys.stderr)
@@ -4977,7 +5324,7 @@ Examples:
             use_timestamp=analyzed_files_exist,
             steps_without_observability_data=steps_missing_obs,
             cluster_coverage_report=cluster_coverage_report if args.file else None,
-            days_requested=args.days if args.file else None,
+            days_requested=lookback_days_fraction if args.file else None,
             detailed_executions=detailed_executions if detailed_executions else None,
         )
         print(

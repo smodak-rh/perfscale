@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 import sys
 import time
+import traceback
 
 import requests
 import urllib3
 
 urllib3.disable_warnings()
+
+if len(sys.argv) != 6:
+    print(
+        f"Usage: {sys.argv[0]} <token> <host> <query> <start> <end>",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 token, host, query, start, end = sys.argv[1:]
 
@@ -39,13 +47,24 @@ params = {
     "step": step,
 }
 
-t0 = time.time()
-resp = requests.get(
-    url,
-    headers=headers,
-    params=params,
-    verify=False,
-    timeout=900,  # nosec B501
-)  # 15 minutes timeout
-resp.raise_for_status()
-print(resp.text)
+try:
+    t0 = time.time()
+    resp = requests.get(
+        url,
+        headers=headers,
+        params=params,
+        verify=False,
+        timeout=900,  # nosec B501
+    )  # 15 minutes timeout
+    if resp.status_code != 200:
+        body = (resp.text or "")[:500].replace("\n", " ")
+        print(
+            f"HTTP {resp.status_code} from {host} ({time.time() - t0:.1f}s): {body}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(resp.text)
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
