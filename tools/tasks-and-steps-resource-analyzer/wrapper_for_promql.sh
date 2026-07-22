@@ -20,7 +20,8 @@ TOKEN="$(oc whoami --show-token)"
 PROM="$(oc -n openshift-monitoring get route prometheus-k8s --no-headers | awk '{print $2}')"
 
 END="$(date +%s)"
-START=$(( END - DAYS * 86400 ))
+LOOKBACK_SECONDS=$(( DAYS * 86400 ))
+START=$(( END - LOOKBACK_SECONDS ))
 RANGE="${DAYS}d"
 
 query() {
@@ -113,8 +114,9 @@ bytes_to_mb() {
 # ------------------------------------------------------------
 
 # Get list of pods for this task (filtered by task label)
+# list_pods_for_a_particular_task.py argv[5] is lookback seconds (not days)
 log "Getting pods for task=$TASK..."
-POD_LIST="$(python3 list_pods_for_a_particular_task.py "$TOKEN" "$PROM" "$TASK" "$END" "$DAYS" 2>/dev/null | jq -r '.data.result[].metric.pod' 2>/dev/null | sort -u)"
+POD_LIST="$(python3 list_pods_for_a_particular_task.py "$TOKEN" "$PROM" "$TASK" "$END" "$LOOKBACK_SECONDS" 2>/dev/null | jq -r '.data.result[].metric.pod' 2>/dev/null | sort -u)"
 
 # Convert to array (bash 3.2 compatible - no associative arrays)
 pods=()
